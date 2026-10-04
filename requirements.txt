@@ -1,0 +1,21 @@
+# Garante Privacy search POC
+#   pip install -r requirements.txt
+# Minimum versions are the ones this project was tested with.
+
+# Scraping (garante_scraper.py, scraper_v3.py)
+httpx>=0.28
+requests>=2.32
+beautifulsoup4>=4.13
+lxml>=5.3
+
+# Chunking + embedding (build_index.py)
+numpy>=2.3
+torch>=2.11            # for a CUDA build, see https://pytorch.org/get-started/locally/
+transformers>=5.8
+sentence-transformers>=5.5
+scipy>=1.16              # BM25 sparse index
+snowballstemmer>=2.2     # Italian stemming for BM25
+torchvision
+
+# Search UI (app.py)
+streamlit>=1.51

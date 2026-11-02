@@ -19,3 +19,11 @@ torchvision
 
 # Search UI (app.py)
 streamlit>=1.51
+
+# Supabase upload (upload_supabase.py)
+psycopg[binary]>=3.2
+pgvector>=0.5
+
+# Search API (api/main.py)
+fastapi>=0.115
+uvicorn[standard]>=0.32

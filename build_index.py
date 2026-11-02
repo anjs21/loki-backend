@@ -75,6 +75,9 @@ BOILERPLATE_MIN_CHARS = 60  # shorter paragraphs (headings like "DISPONE") are n
 # FORMULA_MIN_SHARE procedural phrases is dropped, unless it states which articles were violated.
 FORMULA_MAX_TOPIC = 0.5
 FORMULA_MIN_SHARE = 0.6
+# Topic spread is measured over the tagged decisions that use a phrase (about half of the pre-2018 decisions have
+# no tags, and they would make every phrase look spread); with fewer tagged decisions than this it cannot be judged.
+FORMULA_MIN_TAGGED = 12
 
 STUB = re.compile(r"Attendere prego|^Redirect$", re.M)
 DOCWEB_HEADER = re.compile(r"^\[\s*doc\.?\s*web\s*n\.?\s*\d+\s*\]\s*", re.I)
@@ -96,8 +99,9 @@ CLAUSE_SPLIT = re.compile(r"(?<=[.;!?])\s+(?=[A-ZÀÈÉÌÒÙ«“\"(\[0-9])")
 # A sentence saying what was violated is kept even when its wording is formulaic: "per la violazione degli artt. 5
 # e 13", "ha violato l'art. 32", "in violazione del principio di minimizzazione" (but not "l'annotazione delle
 # violazioni e delle misure adottate", the register formula).
-VIOLATION_STATEMENT = re.compile(r"\b(?:violazion[ei]|violat[oaie])\s+(?:de(?:gli|i|l|lla|lle|ll[’'])\s*|gli\s+|i\s+|"
-                                 r"l[’']\s*|la\s+|le\s+|il\s+)?(?:art|principi|disposizion|obblig)", re.I)
+VIOLATION_STATEMENT = re.compile(r"\b(?:violazion[ei]|violat[oaie])\s+(?:di quanto (?:previsto|disposto|stabilito)\s+"
+                                 r"(?:da(?:l|ll[’']|gli|i|lla|lle)?\s*)?)?(?:de(?:gli|i|l|lla|lle|ll[’'])\s*|gli\s+|"
+                                 r"i\s+|l[’']\s*|la\s+|le\s+|il\s+)?(?:art|principi|disposizion|obblig)", re.I)
 
 # Sections of a decision. Openers are matched case-sensitively (they are upper case in the decisions);
 # paragraphs without an opener inherit the current section.
@@ -145,7 +149,8 @@ HEADING_SECTIONS = [
     ("motivazione", re.compile(r"esit|valutazion|contestazion|illiceit|illegittimit|conclusion|osservazion|difes|memori|"
                                r"argomentazion|base giuridic|basi giuridic|titolarit|profili|risultanz|"
                                r"ambito di applicazione|findings|inosservanz|mancat[oaie]\s|principi[oi]?\s+d|obblig|"
-                               r"violazion\w*\s+(?:de(?:gli|i|l|lla|lle|ll[’'])\s*|di cui\s+)?(?:art|princip|obblig|disposiz)|"
+                               r"violazion\w*\s+(?:de(?:gli|i|l|lla|lle|ll[’'])\s*|di cui\s+)?"
+                               r"(?:art|princip|obblig|disposiz)|"
                                r"violazion\w*\s+(?:accertat|contestat|rilevat|riscontrat)|\(artt?\.\s*\d|"
                                r"^\S+\s+sul(l[a'’o]|l?e|\s)", re.I)),
     ("normativa", re.compile(r"quadro (giuridico|normativo)|(normativa|disciplina) (applicabile|di riferimento)", re.I)),
@@ -158,6 +163,14 @@ HEADING_FACTS = HEADING_SECTIONS[-1][1]
 # reasoning such as "4.2 Il trattamento effettuato" names the matter discussed, not a return to the facts.
 SECTION_STAGE = {"fatti": 0, "normativa": 0, "motivazione": 1, "dispositivo": 2}
 DROP_PARAGRAPH = re.compile(r"^Registro dei provvedimenti\b")
+# English translations: about a hundred decisions are published only in English, and some recent pages carry the
+# Italian decision followed by its English translation. Both are left out: they duplicate Italian text and pull
+# English queries towards translations rather than towards the matter asked about. A paragraph is English when it
+# has more English than Italian function words; the translation is the tail of the page that is at least
+# TRANSLATION_MIN_SHARE English (so a short English quote inside an Italian decision stays).
+ENGLISH_WORDS = re.compile(r"\b(the|and|of|to|is|that|with|for|be|which|this|are|by)\b")
+ITALIAN_WORDS = re.compile(r"\b(il|la|di|che|e|del|della|per|con|non|dei|delle|un|una)\b")
+TRANSLATION_MIN_SHARE, TRANSLATION_MIN_WORDS = 0.8, 150
 # A VISTO paragraph citing a law states what the case is about (e.g. art. 144-bis on intimate images), so it is
 # legal framework rather than procedure. Generic citations (the GDPR, the Codice) are removed as boilerplate.
 VISTO_NORMA = re.compile(r"^VIST[OAIE]\s+(altresì\s+)?(l[’'a]\s*|il\s+|i\s+|gli\s+|le\s+)?"
@@ -226,8 +239,21 @@ def label_sections(paras: list[str], title: str) -> list[tuple[str, str]]:
     return [(s, p) for s, p in out if s not in DROP_SECTIONS]
 
 
+def strip_translation(paras: list[str]) -> list[str]:
+    """The paragraphs before an English translation at the end of the page (all of them when there is none)."""
+    cut, words, english = len(paras), 0, 0
+    for i in range(len(paras) - 1, -1, -1):
+        n = len(paras[i].split())
+        is_en = len(ENGLISH_WORDS.findall(paras[i].lower())) > len(ITALIAN_WORDS.findall(paras[i].lower()))
+        words += n
+        english += n if is_en else 0
+        if is_en and english >= TRANSLATION_MIN_WORDS and english >= TRANSLATION_MIN_SHARE * words:
+            cut = i
+    return paras[:cut]
+
+
 def paragraphs(body: str) -> list[str]:
-    """Rejoin lines broken at inline HTML elements into real paragraphs."""
+    """Rejoin lines broken at inline HTML elements into real paragraphs; an English translation is left out."""
     body = DOCWEB_HEADER.sub("", body.strip()).replace("´", "'").replace("`", "'")
     paras, cur = [], []
     for line in body.splitlines():
@@ -242,7 +268,7 @@ def paragraphs(body: str) -> list[str]:
     if cur:
         paras.append(" ".join(cur))
     # tidy spacing left by the line joins: "( testo )", "parola ,"
-    return [re.sub(r"\s+([,.;:)\]])", r"\1", re.sub(r"([(\[])\s+", r"\1", p)) for p in paras]
+    return strip_translation([re.sub(r"\s+([,.;:)\]])", r"\1", re.sub(r"([(\[])\s+", r"\1", p)) for p in paras])
 
 
 def sentences(p: str) -> list[str]:
@@ -273,6 +299,8 @@ def select_docs(n: int = 0) -> tuple[list[dict], Counter]:
             dropped["redirect_stub"] += 1
         elif r["body_sha256"] in seen:
             dropped["duplicate_body"] += 1
+        elif len(" ".join(paragraphs(r["body"]))) < MIN_BODY_CHARS:
+            dropped["english"] += 1  # an English translation, nothing (or only a title) in Italian
         else:
             seen.add(r["body_sha256"])
             out.append(r)
@@ -361,7 +389,8 @@ def _phrases(text: str) -> set[int]:
 
 def procedural_phrases(docs: list[dict], boilerplate: frozenset[str]) -> frozenset[int]:
     """Phrases in at least BOILERPLATE_MIN_DOCS decisions (template representatives) that no single topic tag
-    (`argomenti`) dominates: procedural wording rather than the vocabulary of one kind of case."""
+    (`argomenti`) dominates among the tagged decisions using them: procedural wording rather than the vocabulary
+    of one kind of case."""
     import numpy as np
     from scipy import sparse
     hashes, owners = [], []  # each document's distinct phrases, as arrays (a set of pairs does not fit in memory)
@@ -377,18 +406,22 @@ def procedural_phrases(docs: list[dict], boilerplate: frozenset[str]) -> frozens
     distinct, df = np.unique(hashes, return_counts=True)
     frequent = distinct[df >= BOILERPLATE_MIN_DOCS]
     keep = np.isin(hashes, frequent)
-    in_doc = sparse.csr_matrix((np.ones(int(keep.sum()), np.float32), (np.searchsorted(frequent, hashes[keep]), owners[keep])),
-                               shape=(len(frequent), len(docs)))
+    in_doc = sparse.csr_matrix((np.ones(int(keep.sum()), np.float32),
+                                (np.searchsorted(frequent, hashes[keep]), owners[keep])), shape=(len(frequent), len(docs)))
     tags = {t: j for j, t in enumerate(sorted({t for d in docs for t in d["argomenti"]}))}
     rows, cols = zip(*((i, tags[t]) for i, d in enumerate(docs) for t in d["argomenti"]))
     tagged = sparse.csr_matrix((np.ones(len(rows), np.float32), (rows, cols)), shape=(len(docs), len(tags)))
-    top_tag_share = np.asarray((in_doc @ tagged).max(axis=1).todense()).ravel() / np.asarray(in_doc.sum(1)).ravel()
-    return frozenset(frequent[top_tag_share <= FORMULA_MAX_TOPIC].tolist())
+    n_tagged = in_doc @ np.array([bool(d["argomenti"]) for d in docs], dtype=np.float32)
+    top_tag = np.asarray((in_doc @ tagged).max(axis=1).todense()).ravel()
+    spread = (n_tagged >= FORMULA_MIN_TAGGED) & (top_tag <= FORMULA_MAX_TOPIC * n_tagged)
+    return frozenset(frequent[spread].tolist())
 
 
 def is_formula(sentence: str, procedural: frozenset[int]) -> bool:
     if not procedural or VIOLATION_STATEMENT.search(sentence):
         return False
+    if heading_number(sentence) and re.search(r"\bartt?\.", sentence, re.I):
+        return False  # a heading naming an article ("3.6.1 ART. 5, PAR. 1 LETT. A) ...") says what is discussed
     ph = _phrases(sentence)
     return len(ph & procedural) >= FORMULA_MIN_SHARE * len(ph)
 
@@ -489,11 +522,11 @@ def cmd_chunk(args) -> None:
     (OUT / "duplicates.json").write_text(json.dumps(similar, ensure_ascii=False), encoding="utf-8")
     boilerplate = frozenset(boilerplate_keys(reps))
     procedural = procedural_phrases(reps, boilerplate)
-    n_chunks, sizes, sections, dropped = 0, [], Counter(), Counter()
+    n_chunks, sizes, sections, formula_words = 0, [], Counter(), Counter()
     with (OUT / "chunks.jsonl").open("w", encoding="utf-8") as fh:
         for doc in reps:
             n_similar = len(similar.get(doc["docweb_id"], []))
-            for i, (text, shares, heading) in enumerate(chunk_doc(doc, ntok, boilerplate, procedural, dropped)):
+            for i, (text, shares, heading) in enumerate(chunk_doc(doc, ntok, boilerplate, procedural, formula_words)):
                 section = next(iter(shares))  # majority section by tokens
                 rec = {"chunk_id": f"{doc['docweb_id']}_{i:03d}", "docweb_id": doc["docweb_id"], "chunk_index": i,
                        "title": doc["title"], "date": doc["date"], "url": doc["url"],
@@ -511,7 +544,8 @@ def cmd_chunk(args) -> None:
             "indexed_documents": len(reps), "template_families": sum(1 for g in clusters if len(g) > 1),
             "largest_families": sorted((len(g) for g in clusters), reverse=True)[:5],
             "boilerplate_paragraphs": len(boilerplate),
-            "procedural_phrases": len(procedural), "formula_words_dropped_by_section": dict(dropped.most_common()),
+            "procedural_phrases": len(procedural),
+            "formula_words_dropped_by_section": dict(formula_words.most_common()),
             "chunks": n_chunks, "chunks_per_doc": round(n_chunks / len(reps), 2),
             "chunks_by_section": dict(sections.most_common()),
             "embed_tokens_p10_p50_p90_max": [sizes[int(p * (len(sizes) - 1))] for p in (.1, .5, .9, 1)],

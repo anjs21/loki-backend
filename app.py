@@ -18,7 +18,6 @@ st.set_page_config(page_title="Ricerca Provvedimenti Garante", page_icon="⚖️
 
 PASSAGE_CHARS = 700
 SIMILAR_SHOWN = 30
-MODEL_LABELS = {"jasper": "Jasper 600M", "bge-m3": "BGE-M3"}
 STOPWORDS = {"della", "delle", "dello", "degli", "nella", "nelle", "sulla", "sulle", "dalla", "dalle", "come",
              "anche", "sono", "questo", "questa", "quale", "quali", "with", "from", "that", "their", "after"}
 
@@ -82,6 +81,8 @@ def highlight(text: str, query: str) -> str:
 
 def passage(label: str, score: float, chunk: dict, query: str) -> None:
     section = b.SECTION_NAMES.get(chunk.get("section", "testo"), "Testo")
+    if chunk.get("heading"):  # the decision's own sub-section, e.g. "Assenza di una base giuridica (artt. 6 e 9)"
+        section += " · " + html.escape(chunk["heading"].split(" > ")[-1][:120])
     st.markdown(f"**{label}** · <small>{section} · score {score:.3f}</small>", unsafe_allow_html=True)
     text = chunk["text"]
     short = text if len(text) <= PASSAGE_CHARS else text[:PASSAGE_CHARS].rsplit(" ", 1)[0] + " …"
@@ -112,11 +113,17 @@ with st.sidebar:
     st.header("Ricerca")
     model_key = st.selectbox("Modello di embedding", available,
                              index=available.index(b.DEFAULT_MODEL) if b.DEFAULT_MODEL in available else 0,
-                             format_func=lambda m: MODEL_LABELS.get(m, m))
+                             format_func=lambda m: b.MODELS[m]["label"])
     alpha = st.slider("Peso parole chiave (BM25)", 0.0, 1.0, b.HYBRID_ALPHA, step=0.1,
                       help="Ricerca ibrida: fonde la classifica semantica e quella per parole chiave (BM25) "
                            "con reciprocal rank fusion. 0 = solo semantica, 1 = solo parole chiave.")
     st.header("Filtri")
+    scope = st.radio("Cerca in", [None, "violation", "activity"],
+                     format_func={None: "Tutto il provvedimento", "violation": "Solo violazioni (motivazione e decisione)",
+                                  "activity": "Solo fatti"}.get,
+                     help="Limita la ricerca ai passaggi della sezione scelta: le violazioni contestate e la decisione "
+                          "(solo provvedimenti su casi, esclusi pareri, deliberazioni e atti generali), "
+                          "oppure i fatti e l'attività di trattamento.")
     y0, y1 = int(years.min()), int(years.max())
     year_range = st.slider("Anno", y0, y1, (y0, y1)) if y0 < y1 else (y0, y1)
     tip_sel = st.multiselect("Tipologia", tipologie, placeholder="Tutte")
@@ -136,8 +143,7 @@ bm25 = get_bm25() if alpha > 0 else None
 
 # ----------------------------------------------------------------------------- search
 st.title("Ricerca nei provvedimenti del Garante")
-st.caption("Ricerca ibrida (semantica + parole chiave, anche in inglese) su attività di trattamento e violazioni "
-           "contestate.")
+st.caption("Ricerca (anche in inglese) su attività di trattamento e violazioni contestate.")
 
 query = st.text_input("Cerca", placeholder="es. telecamere per controllare i dipendenti, data breach ransomware, "
                                            "telemarketing registro delle opposizioni", label_visibility="collapsed")
@@ -146,7 +152,12 @@ if query.strip():
     with st.spinner("Ricerca in corso..."):
         q = b.encode_queries(model, model_key, [query])[0]
         scores = b.score_chunks(q, query, emb, bm25, weights if use_weights else None, alpha)
+        if bm25 is not None and b.effective_alpha(query, alpha) != alpha:
+            st.caption(f"Riferimenti esatti nella ricerca (numeri o virgolette): peso parole chiave "
+                       f"portato a {b.effective_alpha(query, alpha):.1f}.")
         mask = (years >= year_range[0]) & (years <= year_range[1])
+        if scope:
+            mask &= b.scope_mask(chunks, scope)
         if tip_sel:
             sel = set(tip_sel)
             mask &= np.array([bool(sel.intersection(c["tipologia"])) for c in chunks])

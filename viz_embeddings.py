@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
@@ -60,9 +61,11 @@ def load_docs(scope: str | None = None):
     return chunks, rows, chunk_doc, doc_ids, pos, nodes
 
 
-def citation_edges(doc_ids: list[int], pos: dict[int, int]) -> list[tuple[int, int]]:
+def citation_edges(doc_ids: list[int], pos: dict[int, int], out: Path = b.OUT) -> list[tuple[int, int]]:
+    """Citation links between the documents, as index pairs (i < j); `out` is the index folder whose near-duplicate
+    families apply (phase_maps.py passes the snapshots of earlier versions)."""
     rep_of = {d: d for d in doc_ids}
-    dup_path = b.OUT / "duplicates.json"
+    dup_path = out / "duplicates.json"
     if dup_path.exists():
         for rep, twins in json.loads(dup_path.read_text(encoding="utf-8")).items():
             if int(rep) in pos:  # with --sections the representative may be left out

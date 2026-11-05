@@ -7,26 +7,17 @@ from __future__ import annotations
 
 import html
 import json
-import re
 
 import numpy as np
 import streamlit as st
 
 import build_index as b
+from search_ui import STYLE, get_model, highlight, md_escape, spans
 
 st.set_page_config(page_title="Ricerca Provvedimenti Garante", page_icon="⚖️", layout="wide")
 
 PASSAGE_CHARS = 700
 SIMILAR_SHOWN = 30
-STOPWORDS = {"della", "delle", "dello", "degli", "nella", "nelle", "sulla", "sulle", "dalla", "dalle", "come",
-             "anche", "sono", "questo", "questa", "quale", "quali", "with", "from", "that", "their", "after"}
-
-
-@st.cache_resource(show_spinner="Caricamento del modello di embedding...")
-def get_model(key: str):
-    model = b.load_model(key)
-    b.encode_queries(model, key, ["riscaldamento"])  # the first encode pays one-off CUDA setup (~0.25 s)
-    return model
 
 
 @st.cache_resource(show_spinner="Caricamento degli embedding...")
@@ -64,43 +55,21 @@ def get_index():
     return chunks, weights, years, meta, tipologie, similar
 
 
-def md_escape(text: str) -> str:
-    """Escape Markdown in link text."""
-    return re.sub(r"([\[\]*_`$])", r"\\\1", text)
-
-
-def highlight(text: str, query: str) -> str:
-    """HTML-escaped text with query words marked (words of 4+ letters, prefix match to catch inflections)."""
-    out = html.escape(text).replace("\n", "<br>")
-    words = {w.lower() for w in re.findall(r"\w{4,}", query) if w.lower() not in STOPWORDS}
-    for w in sorted(words, key=len, reverse=True):
-        stem = re.escape(w[:max(4, len(w) - 2)])
-        out = re.sub(rf"(?i)\b({stem}\w*)", r"<mark>\1</mark>", out)
-    return out
-
-
 def passage(label: str, score: float, chunk: dict, query: str) -> None:
     section = b.SECTION_NAMES.get(chunk.get("section", "testo"), "Testo")
     if chunk.get("heading"):  # the decision's own sub-section, e.g. "Assenza di una base giuridica (artt. 6 e 9)"
         section += " · " + html.escape(chunk["heading"].split(" > ")[-1][:120])
-    st.markdown(f"**{label}** · <small>{section} · score {score:.3f}</small>", unsafe_allow_html=True)
+    # spans(): text and tags never share an element, so browser page translation can't break the updates
+    st.markdown(spans(f"<p><b>{label}</b> · <small>{section} · score {score:.3f}</small></p>"), unsafe_allow_html=True)
     text = chunk["text"]
     short = text if len(text) <= PASSAGE_CHARS else text[:PASSAGE_CHARS].rsplit(" ", 1)[0] + " …"
-    st.markdown(f"<div class='passage'>{highlight(short, query)}</div>", unsafe_allow_html=True)
+    st.markdown(spans(f"<div class='passage'>{highlight(short, query)}</div>"), unsafe_allow_html=True)
     if len(text) > PASSAGE_CHARS:
         with st.expander("Passaggio completo", expanded=False):
-            st.markdown(f"<div class='passage'>{highlight(text, query)}</div>", unsafe_allow_html=True)
+            st.markdown(spans(f"<div class='passage'>{highlight(text, query)}</div>"), unsafe_allow_html=True)
 
 
-st.markdown("""
-<style>
-.passage { font-size: 0.92rem; line-height: 1.5; padding: 0.5rem 0.75rem; border-left: 3px solid #9aa5b1;
-           background: rgba(127,127,127,0.06); border-radius: 4px; margin-bottom: 0.5rem; }
-mark { background: #ffe58f; color: inherit; padding: 0 1px; border-radius: 2px; }
-.tag { display: inline-block; font-size: 0.78rem; padding: 1px 8px; margin: 0 4px 4px 0; border-radius: 10px;
-       background: rgba(100,130,180,0.15); }
-</style>
-""", unsafe_allow_html=True)
+st.markdown(STYLE, unsafe_allow_html=True)
 
 chunks, weights, years, meta, tipologie, similar = get_index()
 available = [m for m in b.MODELS if b.embeddings_path(m).exists()]
@@ -192,8 +161,9 @@ if query.strip():
                 passage("Passaggio più rilevante", top_score, c, query)
             if twins:
                 with st.expander(f"{len(twins)} decisioni con testo quasi identico (stesso modello di provvedimento)"):
-                    st.markdown("\n".join(f"- {t['date']} · [{md_escape(t['title'])}]({t['url']})"
-                                           for t in twins[:SIMILAR_SHOWN]))
+                    st.markdown(spans("<ul>" + "".join(
+                        f"<li>{t['date']} · <a href='{html.escape(t['url'])}' target='_blank'>{html.escape(t['title'])}"
+                        f"</a></li>" for t in twins[:SIMILAR_SHOWN]) + "</ul>"), unsafe_allow_html=True)
                     if len(twins) > SIMILAR_SHOWN:
                         st.caption(f"... e altre {len(twins) - SIMILAR_SHOWN}.")
 else:

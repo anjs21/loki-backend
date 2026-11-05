@@ -624,8 +624,8 @@ class Analyzer:
         return out
 
 
-def _chunks_key() -> str:
-    return hashlib.sha256((OUT / "chunks.jsonl").read_bytes()).hexdigest()[:12]
+def _chunks_key(out: Path = OUT) -> str:
+    return hashlib.sha256((out / "chunks.jsonl").read_bytes()).hexdigest()[:12]
 
 
 def cmd_bm25(args) -> None:
@@ -657,13 +657,14 @@ def cmd_bm25(args) -> None:
 
 
 class BM25:
-    def __init__(self) -> None:
+    def __init__(self, out: Path = OUT) -> None:
+        """The keyword index in `out` (default data/poc; evolution.py also opens the snapshots of earlier versions)."""
         from scipy import sparse
-        meta = json.loads((OUT / "bm25_vocab.json").read_text(encoding="utf-8"))
-        if meta["chunks_key"] != _chunks_key():
+        meta = json.loads((out / "bm25_vocab.json").read_text(encoding="utf-8"))
+        if meta["chunks_key"] != _chunks_key(out):
             raise RuntimeError("bm25 index is out of date: run `python build_index.py bm25`")
         self.vocab = meta["vocab"]
-        self.matrix = sparse.load_npz(OUT / "bm25.npz").tocsc()
+        self.matrix = sparse.load_npz(out / "bm25.npz").tocsc()
         self.analyze = Analyzer()
 
     def scores(self, query: str):
